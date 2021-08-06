@@ -9,6 +9,13 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/platform.h"
+
+#define assert_exit(cond, ret) \
+    do { if (!(cond)) { \
+        printf("  !. assert: failed [line: %d, error: -0x%04X]\n", __LINE__, -ret); \
+        goto cleanup; \
+    } } while (0)
+
 static void dump_buf(char *info, uint8_t *buf, uint32_t len)//格式化输出
 {
     mbedtls_printf("%s", info);
@@ -28,76 +35,62 @@ static void dump_rsa_key(mbedtls_rsa_context *ctx)//输出密钥
 
     mbedtls_mpi_write_string(&ctx->E , 16, buf, sizeof(buf), &olen);
     mbedtls_printf("E: %s\n", buf);
-   
+
     mbedtls_mpi_write_string(&ctx->D , 16, buf, sizeof(buf), &olen);
     mbedtls_printf("D: %s\n", buf);
-    
+
     mbedtls_mpi_write_string(&ctx->P , 16, buf, sizeof(buf), &olen);
     mbedtls_printf("P: %s\n", buf);
-   
 
     mbedtls_mpi_write_string(&ctx->Q , 16, buf, sizeof(buf), &olen);
     mbedtls_printf("Q: %s\n", buf);
+
 }
 
 int main(void)
 {
-    int ret;
-    size_t olen = 0;
-    uint8_t out[2048/8];
+    int ret = 0;
+    uint8_t msg[100];
+    uint8_t sig[2048/8];
+    uint8_t *pers = "wtt_rsa_sign";//用来初始化随机数的种子
     
-
-    mbedtls_rsa_context ctx;    //RSA密钥结构体
+    mbedtls_rsa_context ctx;//密钥结构体
     mbedtls_entropy_context entropy;//熵结构体
     mbedtls_ctr_drbg_context ctr_drbg;//随机数结构体
-    const char *pers = "simple_rsa";//用来初始化随机数的种子
-    const char *msg = "This is the RSA signature and verification!";//签名的消息
 
     mbedtls_entropy_init(&entropy);//初始化熵结构体
     mbedtls_ctr_drbg_init(&ctr_drbg);//初始化随机数结构体
-    //rsa结构体初始化
-    mbedtls_rsa_init(&ctx, MBEDTLS_RSA_PKCS_V21, //填充方案OAEP
-    						MBEDTLS_MD_SHA256); //SHA256做散列算法
+	//RSA密钥对初始化       填充方式PSS(OAEP),散列算法SHA256
+    mbedtls_rsa_init(&ctx, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
 
     ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, 
-                                    (const uint8_t *) pers, strlen(pers));//根据个性化字符串更新种子
-
-    mbedtls_printf("\n  . setup rng ... ok\n");
-
-    mbedtls_printf("\n  ! RSA Generating large primes may take minutes! \n");
-	//生成RSA密钥
+                                (const uint8_t *) pers, strlen(pers));//根据个性化字符串更新种子
+  
+    //产生RSA密钥对
+    mbedtls_printf("  ! RSA Generating large primes may take minutes! \n");
     ret = mbedtls_rsa_gen_key(&ctx, mbedtls_ctr_drbg_random, //随机数生成接口
                                         &ctr_drbg, //随机数结构体
-                                        2048, //模数位长度
-                                        65537);//公开指数0x01001
-                                 
-    mbedtls_printf("\n  1. RSA generate key ... ok\n");
-    dump_rsa_key(&ctx);  
-    //RSA加密
-    ret = mbedtls_rsa_pkcs1_encrypt(&ctx, mbedtls_ctr_drbg_random, //随机数生成接口
-                            &ctr_drbg,          //随机数结构体
-                            MBEDTLS_RSA_PUBLIC, //公钥操作
-                            strlen(msg),        //消息长度
-                            msg,                //输入消息指针
-                            out);               //输出密文指针
-                              
-     dump_buf("  2. rsa generate signature:", out, sizeof(out));
-	//RSA解密
-    ret = mbedtls_rsa_pkcs1_decrypt(&ctx, mbedtls_ctr_drbg_random,//随机数生成接口
-    						&ctr_drbg,          //随机数结构体
-                            MBEDTLS_RSA_PRIVATE, //私钥操作
-                            &olen,           //输出长度
-                            out,             //输入密文指针
-                            out,             //输出明文指针
-                            sizeof(out));    //最大输出明文数组长度
-                          
+                                        2048,  //RSA2048
+                                        65537);//公开指数
     
-    out[olen] = 0;
-    mbedtls_printf("\n  3. RSA decryption ... ok\n     %s\n", out);
+    mbedtls_printf("  1. rsa generate keypair ... ok\n");
+    dump_rsa_key(&ctx);
+    //RSA用私钥签名 输出sig签名结果
+    ret = mbedtls_rsa_pkcs1_sign(&ctx, mbedtls_ctr_drbg_random, //随机数生成接口
+                                    &ctr_drbg, //随机数结构体
+                                    MBEDTLS_RSA_PRIVATE, //私钥签名
+                                    MBEDTLS_MD_SHA256,//掩码函数
+                                    sizeof(msg),msg,sig
+                                    );
+    mbedtls_printf("  2. rsa generate signature:.. ok");
+    //RSA公钥验签 返回0则验证成功
+    ret = mbedtls_rsa_pkcs1_verify(&ctx, mbedtls_ctr_drbg_random, &ctr_drbg, 
+                                        MBEDTLS_RSA_PUBLIC, MBEDTLS_MD_SHA256, 
+                                        sizeof(msg), msg, sig);
+ 
+    mbedtls_printf("  3. rsa verify signature ... ok\n\n");
 
-    ret = memcmp(out, msg, olen);
-    mbedtls_printf("\n  4. RSA Compare results and plaintext ... ok\n");
     return ret;
-
 }
+
 
